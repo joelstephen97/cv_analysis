@@ -1,4 +1,4 @@
-# Project - Application Tracking System Advanced by Joel Stephen
+# Project - CV Analysis Advanced by Joel Stephen
 
 ## Prerequisites
 ###
