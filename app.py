@@ -7,6 +7,7 @@ from ocr_processor import extract_text_from_file
 import os
 import base64
 from streamlit.components.v1 import html
+import pandas as pd
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -44,7 +45,7 @@ def process_uploaded_files(uploaded_files):
             parsed_data = parser.parse(text)
             if "raw_text" in parsed_data:
                 del parsed_data["raw_text"]
-            logger.info(f"Parsed data :{parsed_data}")
+
             if existing_entry:
                 for key, value in parsed_data.items():
                     setattr(existing_entry, key, value)
@@ -72,7 +73,6 @@ def open_pdf_in_new_tab(pdf_path):
     </script>
     """
     html(js, width=0, height=0)
-
 
 def cv_organizer_and_viewer(cv_entry):
     """Display CV details with preview and download options"""
@@ -106,23 +106,129 @@ def cv_organizer_and_viewer(cv_entry):
         else:
             st.error("File missing")
 
-
 def chat_interface(query):
-    # It has been implemented for demonstration purposes and is basic and does not include advanced search functionalities like full text natural language
     if not query:
         return ""
+    selected_cv_id = st.session_state.get('selected_cv_id', None)
+
+    if st.button("New Search", key="new_search"):
+        if 'selected_cv_id' in st.session_state:
+            del st.session_state['selected_cv_id']
+        selected_cv_id = None
+    
     session = Session()
     try:
+        if selected_cv_id:
+            cv = session.query(CVDocument).filter(CVDocument.id == selected_cv_id).first()
+            if not cv:
+                st.error(f"Selected CV with ID {selected_cv_id} not found.")
+                if 'selected_cv_id' in st.session_state:
+                    del st.session_state['selected_cv_id']
+                return "Error: Selected CV not found"
+            
+            st.subheader(f"Detailed view of: {cv.filename}")
+            cv_organizer_and_viewer(cv)
+
+            query_lower = query.lower()
+            if "skill" in query_lower:
+                st.write("### Skills")
+                if cv.skills:
+                    st.json(cv.skills)
+                else:
+                    st.write("No skills information available.")
+            elif "education" in query_lower:
+                st.write("### Education")
+                if cv.education:
+                    st.json(cv.education)
+                else:
+                    st.write("No education information available.")
+            elif "experience" in query_lower or "work" in query_lower:
+                st.write("### Work Experience")
+                if cv.work_experience:
+                    st.json(cv.work_experience)
+                else:
+                    st.write("No work experience information available.")
+            elif "personal" in query_lower or "contact" in query_lower:
+                st.write("### Personal Information")
+                if cv.personal_info:
+                    st.json(cv.personal_info)
+                else:
+                    st.write("No personal information available.")
+            elif "project" in query_lower:
+                st.write("### Projects")
+                if cv.projects:
+                    st.json(cv.projects)
+                else:
+                    st.write("No project information available.")
+            elif "certification" in query_lower or "certificate" in query_lower:
+                st.write("### Certifications")
+                if cv.certifications:
+                    st.json(cv.certifications)
+                else:
+                    st.write("No certification information available.")
+            else:
+                st.write("### CV Summary")
+                for section, title in [
+                    ('personal_info', 'Personal Information'),
+                    ('education', 'Education'),
+                    ('work_experience', 'Work Experience'),
+                    ('skills', 'Skills'),
+                    ('projects', 'Projects'),
+                    ('certifications', 'Certifications')
+                ]:
+                    data = getattr(cv, section)
+                    if data:
+                        with st.expander(title):
+                            st.json(data)
+            
+            return f"Showing details for CV: {cv.filename}"
+        
         results = []
+        query_lower = query.lower()
+        
+        search_column = None
+        if "skill" in query_lower:
+            search_column = "skills"
+        elif "education" in query_lower:
+            search_column = "education"
+        elif "experience" in query_lower or "work" in query_lower:
+            search_column = "work_experience"
+        elif "personal" in query_lower or "contact" in query_lower:
+            search_column = "personal_info"
+        elif "project" in query_lower:
+            search_column = "projects"
+        elif "certification" in query_lower or "certificate" in query_lower:
+            search_column = "certifications"
+            
         cvs = session.query(CVDocument).all()
         for cv in cvs:
-            if query.lower() in cv.raw_text.lower():
-                results.append(cv)
+            if search_column:
+                column_data = getattr(cv, search_column)
+                if column_data:
+                    json_str = str(column_data).lower()
+                    search_terms = [term for term in query_lower.split() if term != search_column.lower() 
+                                    and term not in ["skill", "skills", "education", "experience", 
+                                                    "work", "personal", "contact", "project", "projects", 
+                                                    "certification", "certifications"]]
+                    search_term = " ".join(search_terms)
+                    if search_term and search_term in json_str:
+                        results.append(cv)
+            else:
+                if query_lower in cv.raw_text.lower():
+                    results.append(cv)
+        
         if not results:
-            return "No matching CVs found."
+            return "No matching CVs found."  
         response = f"Found {len(results)} matching CVs:\n\n"
         for cv in results:
-            cv_organizer_and_viewer(cv)
+            col1, col2 = st.columns([5, 1])
+            with col1:
+                cv_organizer_and_viewer(cv)
+            with col2:
+                if st.button("Select", key=f"select_{cv.id}"):
+                    st.session_state['selected_cv_id'] = cv.id
+                    st.experimental_rerun()
+        
         return response
     except Exception as e:
         logger.error(f"Error in chat_interface: {str(e)}", exc_info=True)
@@ -130,10 +236,13 @@ def chat_interface(query):
     finally:
         session.close()
 
-
 def main():
     st.set_page_config(page_title="CV Analysis System", layout="wide")
     st.title("CV Analysis System")
+    if 'uploader_key' not in st.session_state:
+        st.session_state.uploader_key = 0
+    if 'selected_cv_id' not in st.session_state:
+        st.session_state['selected_cv_id'] = None
     page = st.sidebar.radio(
         "Navigation", ["Upload CVs", "Search CVs", "Database Stats"]
     )
@@ -143,14 +252,50 @@ def main():
             "Upload CV/s (PDF/DOCX)",
             type=["pdf", "docx"],
             accept_multiple_files=True,
+            key=f"uploaded_files_{st.session_state.uploader_key}",
         )
         if uploaded_files:
             if st.button("Process Files"):
                 with st.spinner("Processing files..."):
                     process_uploaded_files(uploaded_files)
+                # force pseudo reset since streamlit cannot do it direct
+                st.session_state.uploader_key += 1
+
     elif page == "Search CVs":
-        st.header("CV Query Chatbot")
-        user_query = st.text_input("Ask about the CV data:")
+        st.header("CV Search Interface")
+        st.info("""
+        ### How to Use the Advanced CV Search
+        
+        **Step 1: Search for CVs**
+        - Type a search term in the box below (e.g., "Python skills", "MBA education")
+        - The system will search relevant sections of all CVs
+        
+        **Step 2: Explore Results**
+        - Review the matching CV documents
+        - Click the "Select" button next to any CV to explore it in more detail
+        
+        **Step 3: Dig Deeper**
+        - Once you've selected a CV, you can ask specific questions about it
+        - Try queries like "show skills", "education details", or "work experience"
+        
+        **Step 4: Start Over**
+        - Click "New Search" anytime to search across all CVs again
+
+        """)
+        
+        if st.session_state.get('selected_cv_id'):
+            session = Session()
+            cv = session.query(CVDocument).filter(CVDocument.id == st.session_state['selected_cv_id']).first()
+            session.close()
+            if cv:
+                st.success(f"🔍 Currently exploring: **{cv.filename}**")
+        
+        user_query = st.text_input(
+            "Enter your search query:",
+            placeholder="e.g., 'Python skills', 'education at MIT', 'project experience'",
+            help="Include keywords like 'skills', 'education', or 'experience' to search in specific sections"
+        )
+        
         if user_query:
             with st.spinner("Searching..."):
                 response = chat_interface(user_query)
@@ -167,6 +312,25 @@ def main():
                 cvs = session.query(CVDocument).all()
                 for cv in cvs:
                     cv_organizer_and_viewer(cv)
+                    
+                st.subheader("Skills Distribution")
+                all_skills = {}
+                for cv in cvs:
+                    if cv.skills:
+                        try:
+                            cv_skills = cv.skills if isinstance(cv.skills, list) else cv.skills.get('skills', [])
+                            for skill in cv_skills:
+                                if isinstance(skill, str):
+                                    all_skills[skill] = all_skills.get(skill, 0) + 1
+                        except:
+                            pass
+                
+                if all_skills:
+                    skills_sorted = sorted(all_skills.items(), key=lambda x: x[1], reverse=True)
+                    skills_df = pd.DataFrame(skills_sorted, columns=["Skill", "Count"])
+                    st.bar_chart(skills_df.set_index("Skill"))
+                else:
+                    st.write("No skills data available for analysis.")
         finally:
             session.close()
 
